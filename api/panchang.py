@@ -724,6 +724,7 @@ def get_choghadiya(
     sunset,
     next_sunrise,
     weekday,
+    timezone_name,
 ):
     day = []
     night = []
@@ -746,8 +747,22 @@ def get_choghadiya(
 
         day.append({
             "name": CHOG_DAY[weekday][i],
-            "start": start.isoformat(),
-            "end": end.isoformat(),
+            "start": local_time(
+                start,
+                timezone_name,
+            ),
+            "end": local_time(
+                end,
+                timezone_name,
+            ),
+            "startISO": iso_local(
+                start,
+                timezone_name,
+            ),
+            "endISO": iso_local(
+                end,
+                timezone_name,
+            ),
         })
 
     night_length = (
@@ -768,16 +783,28 @@ def get_choghadiya(
 
         night.append({
             "name": CHOG_NIGHT[weekday][i],
-            "start": start.isoformat(),
-            "end": end.isoformat(),
+            "start": local_time(
+                start,
+                timezone_name,
+            ),
+            "end": local_time(
+                end,
+                timezone_name,
+            ),
+            "startISO": iso_local(
+                start,
+                timezone_name,
+            ),
+            "endISO": iso_local(
+                end,
+                timezone_name,
+            ),
         })
 
     return {
         "day": day,
         "night": night,
     }
-
-
 # ============================================================
 # SAMVAT
 # ============================================================
@@ -1086,11 +1113,12 @@ def calculate_panchang(
     if next_sunrise:
 
         choghadiya = get_choghadiya(
-            sunrise,
-            sunset,
-            next_sunrise,
-            sunday_based_weekday,
-        )
+    sunrise,
+    sunset,
+    next_sunrise,
+    sunday_based_weekday,
+    timezone_name,
+)
 
     else:
 
