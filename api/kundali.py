@@ -3,6 +3,12 @@ from datetime import datetime, timezone
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
+from api.location import location_api
+
+app.register_blueprint(
+    location_api
+)
+
 
 # ---------------------------------------------------------
 # SWISS EPHEMERIS
