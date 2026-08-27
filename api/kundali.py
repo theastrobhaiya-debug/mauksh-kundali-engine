@@ -14,9 +14,13 @@ def add_cors_headers(response):
 
 
 from api.location import location_api
+from api.panchang import panchang_api
 
 app.register_blueprint(
     location_api
+)
+app.register_blueprint(
+    panchang_api
 )
 
 
