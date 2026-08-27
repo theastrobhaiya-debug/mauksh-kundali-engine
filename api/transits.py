@@ -1,17 +1,27 @@
 import swisseph as swe
-from datetime import datetime, timedelta, timezone
 
-from flask import Blueprint, request, jsonify
+from datetime import datetime, timezone
+from flask import Blueprint, jsonify, request
 
+
+# =========================================================
+# BLUEPRINT
+# =========================================================
 
 transits_api = Blueprint("transits_api", __name__)
 
 
 # =========================================================
-# VEDIC / SIDEREAL SETTINGS
+# VEDIC SETTINGS
 # =========================================================
 
 swe.set_sid_mode(swe.SIDM_LAHIRI)
+
+FLAGS = (
+    swe.FLG_SWIEPH
+    | swe.FLG_SIDEREAL
+    | swe.FLG_SPEED
+)
 
 
 SIGNS = [
@@ -30,20 +40,20 @@ SIGNS = [
 ]
 
 
-SIGN_HINDI = {
-    "Aries": "Mesha",
-    "Taurus": "Vrishabha",
-    "Gemini": "Mithuna",
-    "Cancer": "Karka",
-    "Leo": "Simha",
-    "Virgo": "Kanya",
-    "Libra": "Tula",
-    "Scorpio": "Vrishchika",
-    "Sagittarius": "Dhanu",
-    "Capricorn": "Makara",
-    "Aquarius": "Kumbha",
-    "Pisces": "Meena",
-}
+VEDIC_SIGNS = [
+    "Mesha",
+    "Vrishabha",
+    "Mithuna",
+    "Karka",
+    "Simha",
+    "Kanya",
+    "Tula",
+    "Vrishchika",
+    "Dhanu",
+    "Makara",
+    "Kumbha",
+    "Meena",
+]
 
 
 NAKSHATRAS = [
@@ -102,7 +112,7 @@ PLANETS = {
 }
 
 
-PLANET_SYMBOLS = {
+SYMBOLS = {
     "Sun": "☉",
     "Moon": "☽",
     "Mars": "♂",
@@ -115,19 +125,49 @@ PLANET_SYMBOLS = {
 }
 
 
-NAKSHATRA_SIZE = 360.0 / 27.0
-PADA_SIZE = NAKSHATRA_SIZE / 4.0
-
-
 # =========================================================
 # HELPERS
 # =========================================================
 
 def normalize(value):
-    return value % 360.0
+    return float(value) % 360.0
 
 
-def get_sign(longitude):
+def get_datetime():
+    value = request.args.get("datetime")
+
+    if not value:
+        return datetime.now(timezone.utc)
+
+    value = value.replace("Z", "+00:00")
+
+    dt = datetime.fromisoformat(value)
+
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+
+    return dt
+
+
+def to_julian_day(dt):
+    dt = dt.astimezone(timezone.utc)
+
+    hour = (
+        dt.hour
+        + dt.minute / 60.0
+        + dt.second / 3600.0
+        + dt.microsecond / 3600000000.0
+    )
+
+    return swe.julday(
+        dt.year,
+        dt.month,
+        dt.day,
+        hour
+    )
+
+
+def get_rashi(longitude):
 
     longitude = normalize(longitude)
 
@@ -137,595 +177,464 @@ def get_sign(longitude):
 
     return {
         "name": SIGNS[index],
-        "vedic_name": SIGN_HINDI[SIGNS[index]],
+        "vedic_name": VEDIC_SIGNS[index],
         "number": index + 1,
         "degree": round(degree, 6),
-        "longitude": round(longitude, 6),
     }
-
-
-def format_degree(degree):
-
-    degree = float(degree)
-
-    d = int(degree)
-
-    minutes_float = (degree - d) * 60
-
-    m = int(minutes_float)
-
-    seconds = round((minutes_float - m) * 60)
-
-    if seconds == 60:
-        seconds = 0
-        m += 1
-
-    if m == 60:
-        m = 0
-        d += 1
-
-    return f"{d}° {m:02d}' {seconds:02d}\""
 
 
 def get_nakshatra(longitude):
 
     longitude = normalize(longitude)
 
-    index = int(longitude / NAKSHATRA_SIZE)
+    nakshatra_size = 360.0 / 27.0
+    pada_size = nakshatra_size / 4.0
 
-    position = longitude - (index * NAKSHATRA_SIZE)
+    index = int(longitude / nakshatra_size)
 
-    pada = int(position / PADA_SIZE) + 1
+    position = longitude - (
+        index * nakshatra_size
+    )
 
-    lord = NAKSHATRA_LORDS[index % 9]
+    pada = int(position / pada_size) + 1
 
     return {
         "name": NAKSHATRAS[index],
         "number": index + 1,
         "pada": pada,
-        "lord": lord,
-        "degree_in_nakshatra": round(position, 6),
+        "lord": NAKSHATRA_LORDS[index % 9],
     }
 
 
-# =========================================================
-# JULIAN DAY
-# =========================================================
+def format_degree(degree):
 
-def datetime_to_jd(dt):
+    degrees = int(degree)
 
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+    minutes_float = (
+        degree - degrees
+    ) * 60
 
-    dt = dt.astimezone(timezone.utc)
+    minutes = int(minutes_float)
 
-    hour = (
-        dt.hour
-        + dt.minute / 60
-        + dt.second / 3600
-        + dt.microsecond / 3600000000
+    seconds = round(
+        (minutes_float - minutes) * 60
     )
 
-    return swe.julday(
-        dt.year,
-        dt.month,
-        dt.day,
-        hour,
+    if seconds >= 60:
+        seconds = 0
+        minutes += 1
+
+    if minutes >= 60:
+        minutes = 0
+        degrees += 1
+
+    return (
+        f"{degrees}° "
+        f"{minutes:02d}' "
+        f"{seconds:02d}\""
     )
 
 
 # =========================================================
-# PLANET POSITION
+# PLANET CALCULATION
 # =========================================================
 
-def calculate_planet(planet_name, dt):
+def calculate_planet(name, dt):
 
-    jd = datetime_to_jd(dt)
+    jd = to_julian_day(dt)
 
-    planet_id = PLANETS[planet_name]
+    planet_id = PLANETS[name]
 
-    flags = (
-        swe.FLG_SWIEPH
-        | swe.FLG_SIDEREAL
-        | swe.FLG_SPEED
-    )
-
-    result, retflags = swe.calc_ut(
+    result, flags = swe.calc_ut(
         jd,
         planet_id,
-        flags,
+        FLAGS
     )
 
     longitude = normalize(result[0])
 
-    speed = result[3]
+    speed = float(result[3])
 
-    sign = get_sign(longitude)
+    rashi = get_rashi(longitude)
 
     nakshatra = get_nakshatra(longitude)
 
-    retrograde = speed < 0
-
     return {
-        "planet": planet_name,
-        "symbol": PLANET_SYMBOLS.get(planet_name),
-        "longitude": round(longitude, 6),
-        "rashi": sign["name"],
-        "vedic_rashi": sign["vedic_name"],
-        "rashi_number": sign["number"],
-        "degree": round(sign["degree"], 6),
-        "degree_formatted": format_degree(sign["degree"]),
-        "nakshatra": nakshatra["name"],
-        "nakshatra_number": nakshatra["number"],
-        "pada": nakshatra["pada"],
-        "nakshatra_lord": nakshatra["lord"],
-        "retrograde": retrograde,
-        "motion": "Retrograde" if retrograde else "Direct",
-        "speed": round(speed, 8),
+        "planet": name,
+        "symbol": SYMBOLS[name],
+
+        "longitude": round(
+            longitude,
+            6
+        ),
+
+        "rashi": rashi["name"],
+
+        "vedic_rashi": rashi[
+            "vedic_name"
+        ],
+
+        "rashi_number": rashi[
+            "number"
+        ],
+
+        "degree": rashi[
+            "degree"
+        ],
+
+        "degree_formatted":
+            format_degree(
+                rashi["degree"]
+            ),
+
+        "nakshatra":
+            nakshatra["name"],
+
+        "nakshatra_number":
+            nakshatra["number"],
+
+        "pada":
+            nakshatra["pada"],
+
+        "nakshatra_lord":
+            nakshatra["lord"],
+
+        "speed":
+            round(speed, 8),
+
+        "retrograde":
+            speed < 0,
+
+        "motion":
+            "Retrograde"
+            if speed < 0
+            else "Direct",
     }
 
 
-# =========================================================
-# KETU
-# =========================================================
-
 def calculate_ketu(dt):
 
-    rahu = calculate_planet("Rahu", dt)
+    rahu = calculate_planet(
+        "Rahu",
+        dt
+    )
 
     longitude = normalize(
         rahu["longitude"] + 180.0
     )
 
-    sign = get_sign(longitude)
+    rashi = get_rashi(longitude)
 
-    nakshatra = get_nakshatra(longitude)
+    nakshatra = get_nakshatra(
+        longitude
+    )
 
     return {
         "planet": "Ketu",
         "symbol": "☋",
-        "longitude": round(longitude, 6),
-        "rashi": sign["name"],
-        "vedic_rashi": sign["vedic_name"],
-        "rashi_number": sign["number"],
-        "degree": round(sign["degree"], 6),
-        "degree_formatted": format_degree(sign["degree"]),
-        "nakshatra": nakshatra["name"],
-        "nakshatra_number": nakshatra["number"],
-        "pada": nakshatra["pada"],
-        "nakshatra_lord": nakshatra["lord"],
-        "retrograde": True,
-        "motion": "Retrograde",
-        "speed": rahu["speed"],
+
+        "longitude":
+            round(longitude, 6),
+
+        "rashi":
+            rashi["name"],
+
+        "vedic_rashi":
+            rashi["vedic_name"],
+
+        "rashi_number":
+            rashi["number"],
+
+        "degree":
+            rashi["degree"],
+
+        "degree_formatted":
+            format_degree(
+                rashi["degree"]
+            ),
+
+        "nakshatra":
+            nakshatra["name"],
+
+        "nakshatra_number":
+            nakshatra["number"],
+
+        "pada":
+            nakshatra["pada"],
+
+        "nakshatra_lord":
+            nakshatra["lord"],
+
+        "speed":
+            rahu["speed"],
+
+        "retrograde":
+            True,
+
+        "motion":
+            "Retrograde",
     }
 
 
-# =========================================================
-# ALL CURRENT PLANETS
-# =========================================================
+def calculate_all(dt):
 
-def calculate_all_positions(dt):
-
-    planets = []
+    result = []
 
     for name in PLANETS:
-
-        planets.append(
+        result.append(
             calculate_planet(
                 name,
-                dt,
+                dt
             )
         )
 
-    planets.append(
+    result.append(
         calculate_ketu(dt)
     )
 
-    return planets
+    return result
 
 
 # =========================================================
-# FIND NEXT RASHI TRANSIT
-# =========================================================
-
-def find_next_rashi_transit(
-    planet_name,
-    start_dt,
-    max_days=1000,
-):
-
-    current = calculate_planet(
-        planet_name,
-        start_dt,
-    )
-
-    current_longitude = current["longitude"]
-
-    current_sign = int(
-        current_longitude // 30
-    )
-
-    target_sign = (
-        current_sign + 1
-    ) % 12
-
-    target_longitude = (
-        target_sign * 30.0
-    )
-
-    # If the planet is already extremely close
-    # to the boundary, move to the next boundary.
-    if (
-        target_longitude
-        <= current_longitude
-        + 0.000001
-    ):
-        target_longitude += 360.0
-
-    def longitude_forward(dt):
-
-        position = calculate_planet(
-            planet_name,
-            dt,
-        )["longitude"]
-
-        value = position
-
-        while value < current_longitude:
-            value += 360.0
-
-        return value
-
-    low = start_dt
-
-    high = start_dt + timedelta(
-        days=3
-    )
-
-    target = target_longitude
-
-    # Search for the boundary.
-    found = False
-
-    for _ in range(
-        int(max_days / 3) + 1
-    ):
-
-        value = longitude_forward(high)
-
-        if value >= target:
-
-            found = True
-            break
-
-        high += timedelta(
-            days=3
-        )
-
-        if (
-            high
-            > start_dt
-            + timedelta(days=max_days)
-        ):
-            break
-
-    if not found:
-        return None
-
-    # Binary search for accurate time.
-    for _ in range(45):
-
-        middle = (
-            low
-            + (high - low) / 2
-        )
-
-        value = longitude_forward(
-            middle
-        )
-
-        if value >= target:
-            high = middle
-        else:
-            low = middle
-
-    transit_dt = high
-
-    after = calculate_planet(
-        planet_name,
-        transit_dt
-        + timedelta(seconds=5),
-    )
-
-    return {
-        "planet": planet_name,
-        "from_rashi": current["rashi"],
-        "from_vedic_rashi": current["vedic_rashi"],
-        "to_rashi": after["rashi"],
-        "to_vedic_rashi": after["vedic_rashi"],
-        "transit_utc": transit_dt.astimezone(
-            timezone.utc
-        ).isoformat(),
-        "longitude": after["longitude"],
-        "nakshatra": after["nakshatra"],
-    }
-
-
-# =========================================================
-# CURRENT POSITIONS API
+# CURRENT PLANETARY POSITIONS
 # =========================================================
 
 @transits_api.route(
     "/api/planetary-positions",
-    methods=["GET"],
+    methods=["GET"]
 )
 def planetary_positions():
 
     try:
 
-        date_string = request.args.get(
-            "datetime"
-        )
+        dt = get_datetime()
 
-        if date_string:
-
-            dt = datetime.fromisoformat(
-                date_string.replace(
-                    "Z",
-                    "+00:00"
-                )
-            )
-
-        else:
-
-            dt = datetime.now(
-                timezone.utc
-            )
-
-        positions = calculate_all_positions(
-            dt
-        )
+        planets = calculate_all(dt)
 
         return jsonify({
             "success": True,
+
             "calculation": {
-                "system": "Vedic Sidereal",
-                "ayanamsha": "Lahiri",
-                "zodiac": "Nirayana",
-                "datetime_utc": dt.astimezone(
-                    timezone.utc
-                ).isoformat(),
+                "system":
+                    "Vedic Sidereal",
+
+                "zodiac":
+                    "Nirayana",
+
+                "ayanamsha":
+                    "Lahiri",
+
+                "datetime_utc":
+                    dt.astimezone(
+                        timezone.utc
+                    ).isoformat(),
             },
-            "planets": positions,
+
+            "planets": planets
         })
 
     except Exception as e:
 
         return jsonify({
             "success": False,
-            "error": str(e),
+            "error": str(e)
         }), 500
 
 
 # =========================================================
-# UPCOMING TRANSITS API
+# SIMPLE UPCOMING RASHI TRANSITS
 # =========================================================
+
+def find_next_sign_change(
+    planet,
+    start_dt,
+    max_days
+):
+
+    current = calculate_planet(
+        planet,
+        start_dt
+    )
+
+    previous_sign = current[
+        "rashi_number"
+    ]
+
+    step_hours = 6
+
+    total_steps = int(
+        (max_days * 24)
+        / step_hours
+    )
+
+    for i in range(
+        1,
+        total_steps + 1
+    ):
+
+        check_dt = (
+            start_dt
+            + __import__(
+                "datetime"
+            ).timedelta(
+                hours=i * step_hours
+            )
+        )
+
+        position = calculate_planet(
+            planet,
+            check_dt
+        )
+
+        if (
+            position["rashi_number"]
+            != previous_sign
+        ):
+
+            return {
+                "planet": planet,
+
+                "from_rashi":
+                    current["rashi"],
+
+                "from_vedic_rashi":
+                    current[
+                        "vedic_rashi"
+                    ],
+
+                "to_rashi":
+                    position["rashi"],
+
+                "to_vedic_rashi":
+                    position[
+                        "vedic_rashi"
+                    ],
+
+                "transit_utc":
+                    check_dt.astimezone(
+                        timezone.utc
+                    ).isoformat(),
+            }
+
+    return None
+
 
 @transits_api.route(
     "/api/upcoming-transits",
-    methods=["GET"],
+    methods=["GET"]
 )
 def upcoming_transits():
 
     try:
 
-        date_string = request.args.get(
-            "datetime"
-        )
+        dt = get_datetime()
 
-        if date_string:
+        results = []
 
-            dt = datetime.fromisoformat(
-                date_string.replace(
-                    "Z",
-                    "+00:00"
-                )
-            )
-
-        else:
-
-            dt = datetime.now(
-                timezone.utc
-            )
-
-        transit_list = []
+        limits = {
+            "Sun": 40,
+            "Moon": 5,
+            "Mars": 120,
+            "Mercury": 90,
+            "Jupiter": 500,
+            "Venus": 90,
+            "Saturn": 1000,
+            "Rahu": 1000,
+        }
 
         for planet in PLANETS:
 
-            result = find_next_rashi_transit(
+            transit = find_next_sign_change(
                 planet,
                 dt,
+                limits[planet]
             )
 
-            if result:
-                transit_list.append(
-                    result
+            if transit:
+                results.append(
+                    transit
                 )
 
-        # Nodes use the same calculated
-        # astronomical node movement.
-        rahu = find_next_rashi_transit(
-            "Rahu",
-            dt,
-        )
-
-        if rahu:
-
-            transit_list.append({
-                "planet": "Rahu",
-                "from_rashi": rahu[
-                    "from_rashi"
-                ],
-                "from_vedic_rashi": rahu[
-                    "from_vedic_rashi"
-                ],
-                "to_rashi": rahu[
-                    "to_rashi"
-                ],
-                "to_vedic_rashi": rahu[
-                    "to_vedic_rashi"
-                ],
-                "transit_utc": rahu[
-                    "transit_utc"
-                ],
-                "longitude": rahu[
-                    "longitude"
-                ],
-                "nakshatra": rahu[
-                    "nakshatra"
-                ],
-            })
-
-        # Ketu is always opposite Rahu.
-        if rahu:
-
-            ketu_longitude = normalize(
-                rahu["longitude"] + 180
-            )
-
-            ketu_sign = get_sign(
-                ketu_longitude
-            )
-
-            transit_list.append({
-                "planet": "Ketu",
-                "from_rashi": SIGN_HINDI.get(
-                    SIGNS[
-                        (
-                            SIGNS.index(
-                                rahu[
-                                    "from_rashi"
-                                ]
-                            )
-                            + 6
-                        ) % 12
-                    ]
-                ),
-                "to_rashi": ketu_sign[
-                    "name"
-                ],
-                "to_vedic_rashi": ketu_sign[
-                    "vedic_name"
-                ],
-                "transit_utc": rahu[
-                    "transit_utc"
-                ],
-                "longitude": ketu_longitude,
-                "nakshatra": get_nakshatra(
-                    ketu_longitude
-                )["name"],
-            })
-
-        transit_list.sort(
-            key=lambda x:
-            x["transit_utc"]
+        results.sort(
+            key=lambda item:
+                item["transit_utc"]
         )
 
         return jsonify({
             "success": True,
+
             "calculation": {
-                "system": "Vedic Sidereal",
-                "ayanamsha": "Lahiri",
-                "zodiac": "Nirayana",
-                "datetime_utc": dt.astimezone(
-                    timezone.utc
-                ).isoformat(),
+                "system":
+                    "Vedic Sidereal",
+
+                "zodiac":
+                    "Nirayana",
+
+                "ayanamsha":
+                    "Lahiri",
+
+                "datetime_utc":
+                    dt.astimezone(
+                        timezone.utc
+                    ).isoformat(),
             },
-            "transits": transit_list,
+
+            "transits": results
         })
 
     except Exception as e:
 
         return jsonify({
             "success": False,
-            "error": str(e),
+            "error": str(e)
         }), 500
 
 
 # =========================================================
-# COMBINED API
+# COMBINED ENDPOINT
 # =========================================================
 
 @transits_api.route(
     "/api/transits",
-    methods=["GET"],
+    methods=["GET"]
 )
 def combined_transits():
 
     try:
 
-        date_string = request.args.get(
-            "datetime"
-        )
+        dt = get_datetime()
 
-        if date_string:
-
-            dt = datetime.fromisoformat(
-                date_string.replace(
-                    "Z",
-                    "+00:00"
-                )
-            )
-
-        else:
-
-            dt = datetime.now(
-                timezone.utc
-            )
-
-        positions = calculate_all_positions(
-            dt
-        )
-
-        upcoming = []
-
-        for planet in PLANETS:
-
-            result = find_next_rashi_transit(
-                planet,
-                dt,
-            )
-
-            if result:
-                upcoming.append(
-                    result
-                )
-
-        upcoming.sort(
-            key=lambda x:
-            x["transit_utc"]
-        )
+        planets = calculate_all(dt)
 
         return jsonify({
             "success": True,
 
-            "meta": {
-                "system": "Vedic Sidereal",
-                "zodiac": "Nirayana",
-                "ayanamsha": "Lahiri",
-                "datetime_utc": dt.astimezone(
-                    timezone.utc
-                ).isoformat(),
+            "calculation": {
+                "system":
+                    "Vedic Sidereal",
+
+                "zodiac":
+                    "Nirayana",
+
+                "ayanamsha":
+                    "Lahiri",
+
+                "datetime_utc":
+                    dt.astimezone(
+                        timezone.utc
+                    ).isoformat(),
             },
 
-            "current_positions": positions,
+            "current_positions":
+                planets,
 
-            "upcoming_rashi_transits": upcoming,
+            "message":
+                "Current planetary positions loaded successfully."
         })
 
     except Exception as e:
 
         return jsonify({
             "success": False,
-            "error": str(e),
+            "error": str(e)
         }), 500
