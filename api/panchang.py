@@ -1006,16 +1006,16 @@ def calculate_panchang(
     # --------------------------------------------------------
 
     search_start = sunrise
-    # Continue searching through the following sunrise.
-# Panchang angas can end after local midnight.
-if next_sunrise:
-    search_end = next_sunrise + timedelta(minutes=1)
-else:
-    search_end = (
-        next_local_midnight
-        .astimezone(timezone.utc)
-        + timedelta(hours=6)
-    )
+        # Continue searching through the following sunrise.
+    # Panchang angas can end after local midnight.
+    if next_sunrise:
+        search_end = next_sunrise + timedelta(minutes=1)
+    else:
+        search_end = (
+            next_local_midnight
+            .astimezone(timezone.utc)
+            + timedelta(hours=6)
+        )
 
     tithi_end = find_transition(
         search_start,
