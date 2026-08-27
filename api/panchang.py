@@ -2,17 +2,19 @@ from flask import Blueprint, request, jsonify
 import swisseph as swe
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
+import math
 
 panchang_api = Blueprint("panchang_api", __name__)
 
-# ---------------------------------------------------------
-# DATA
-# ---------------------------------------------------------
+# ============================================================
+# MAUKSH PANCHANG ENGINE
+# Swiss Ephemeris + Lahiri Ayanamsha
+# ============================================================
 
 SIGNS = [
-    "Aries", "Taurus", "Gemini", "Cancer",
-    "Leo", "Virgo", "Libra", "Scorpio",
-    "Sagittarius", "Capricorn", "Aquarius", "Pisces"
+    "Mesha", "Vrishabha", "Mithuna", "Karka",
+    "Simha", "Kanya", "Tula", "Vrishchika",
+    "Dhanu", "Makara", "Kumbha", "Meena"
 ]
 
 NAKSHATRAS = [
@@ -22,12 +24,12 @@ NAKSHATRAS = [
     "Uttara Phalguni", "Hasta", "Chitra", "Swati",
     "Vishakha", "Anuradha", "Jyeshtha", "Mula",
     "Purva Ashadha", "Uttara Ashadha", "Shravana",
-    "Dhanishta", "Shatabhisha",
+    "Dhanishtha", "Shatabhisha",
     "Purva Bhadrapada", "Uttara Bhadrapada",
     "Revati"
 ]
 
-YOGAS = [
+YOGA_NAMES = [
     "Vishkumbha", "Priti", "Ayushman", "Saubhagya",
     "Shobhana", "Atiganda", "Sukarma", "Dhriti",
     "Shula", "Ganda", "Vriddhi", "Dhruva",
@@ -37,33 +39,58 @@ YOGAS = [
     "Brahma", "Indra", "Vaidhriti"
 ]
 
-KARANAS = [
-    "Bava",
-    "Balava",
-    "Kaulava",
-    "Taitila",
-    "Garaja",
-    "Vanija",
-    "Vishti"
+TITHI_NAMES = [
+    "Pratipada", "Dvitiya", "Tritiya", "Chaturthi",
+    "Panchami", "Shashthi", "Saptami", "Ashtami",
+    "Navami", "Dashami", "Ekadashi", "Dwadashi",
+    "Trayodashi", "Chaturdashi", "Purnima"
 ]
 
-VARAS = [
-    "Sunday",
-    "Monday",
-    "Tuesday",
-    "Wednesday",
-    "Thursday",
-    "Friday",
-    "Saturday"
+KARANA_MOVING = [
+    "Bava", "Balava", "Kaulava",
+    "Taitila", "Garaja", "Vanija", "Vishti"
 ]
 
-# ---------------------------------------------------------
-# BASIC HELPERS
-# ---------------------------------------------------------
+WEEKDAYS = [
+    "Sunday", "Monday", "Tuesday",
+    "Wednesday", "Thursday", "Friday", "Saturday"
+]
 
-def norm(value):
-    return value % 360.0
+RAHU_SEGMENTS = [8, 2, 7, 5, 6, 4, 3]
+YAMAGANDA_SEGMENTS = [5, 4, 3, 2, 1, 7, 6]
+GULIKA_SEGMENTS = [7, 6, 5, 4, 3, 2, 1]
 
+CHOGHADIYA_DAY = {
+    0: ["Udveg", "Chal", "Labh", "Amrit", "Kaal", "Shubh", "Rog", "Udveg"],
+    1: ["Amrit", "Kaal", "Shubh", "Rog", "Udveg", "Chal", "Labh", "Amrit"],
+    2: ["Rog", "Udveg", "Chal", "Labh", "Amrit", "Kaal", "Shubh", "Rog"],
+    3: ["Labh", "Amrit", "Kaal", "Shubh", "Rog", "Udveg", "Chal", "Labh"],
+    4: ["Shubh", "Rog", "Udveg", "Chal", "Labh", "Amrit", "Kaal", "Shubh"],
+    5: ["Chal", "Labh", "Amrit", "Kaal", "Shubh", "Rog", "Udveg", "Chal"],
+    6: ["Kaal", "Shubh", "Rog", "Udveg", "Chal", "Labh", "Amrit", "Kaal"]
+}
+
+CHOGHADIYA_NIGHT = {
+    0: ["Shubh", "Amrit", "Chal", "Rog", "Kaal", "Labh", "Udveg", "Shubh"],
+    1: ["Chal", "Rog", "Kaal", "Labh", "Udveg", "Shubh", "Amrit", "Chal"],
+    2: ["Kaal", "Labh", "Udveg", "Shubh", "Amrit", "Chal", "Rog", "Kaal"],
+    3: ["Rog", "Udveg", "Shubh", "Amrit", "Chal", "Kaal", "Labh", "Rog"],
+    4: ["Labh", "Kaal", "Chal", "Udveg", "Shubh", "Rog", "Amrit", "Labh"],
+    5: ["Udveg", "Shubh", "Amrit", "Chal", "Rog", "Kaal", "Labh", "Udveg"],
+    6: ["Amrit", "Chal", "Rog", "Kaal", "Labh", "Udveg", "Shubh", "Amrit"]
+}
+
+
+# ============================================================
+# INITIALIZATION
+# ============================================================
+
+swe.set_sid_mode(swe.SIDM_LAHIRI)
+
+
+# ============================================================
+# BASIC ASTRONOMY
+# ============================================================
 
 def jd_from_datetime(dt):
     return swe.julday(
@@ -72,15 +99,17 @@ def jd_from_datetime(dt):
         dt.day,
         dt.hour +
         dt.minute / 60.0 +
-        dt.second / 3600.0
+        dt.second / 3600.0 +
+        dt.microsecond / 3600000000.0
     )
 
 
-def sidereal_longitude(jd, planet):
-    flags = (
-        swe.FLG_SWIEPH |
-        swe.FLG_SIDEREAL
-    )
+def norm(x):
+    return x % 360.0
+
+
+def planet_sidereal_longitude(jd, planet):
+    flags = swe.FLG_SWIEPH | swe.FLG_SIDEREAL
 
     result, _ = swe.calc_ut(
         jd,
@@ -91,173 +120,131 @@ def sidereal_longitude(jd, planet):
     return norm(result[0])
 
 
-def get_sun_moon(jd):
-    sun = sidereal_longitude(
-        jd,
-        swe.SUN
+def sun_moon(jd):
+    return (
+        planet_sidereal_longitude(jd, swe.SUN),
+        planet_sidereal_longitude(jd, swe.MOON)
     )
 
-    moon = sidereal_longitude(
-        jd,
-        swe.MOON
-    )
 
-    return sun, moon
+# ============================================================
+# PANCHANGA
+# ============================================================
 
+def tithi_data(sun, moon):
+    elongation = norm(moon - sun)
 
-# ---------------------------------------------------------
-# PANCHANG CALCULATIONS
-# ---------------------------------------------------------
+    number = int(elongation / 12.0) + 1
 
-def get_tithi(sun, moon):
+    if number > 30:
+        number = 30
 
-    difference = norm(
-        moon - sun
-    )
-
-    index = int(
-        difference / 12.0
-    )
-
-    names = [
-        "Pratipada",
-        "Dvitiya",
-        "Tritiya",
-        "Chaturthi",
-        "Panchami",
-        "Shashthi",
-        "Saptami",
-        "Ashtami",
-        "Navami",
-        "Dashami",
-        "Ekadashi",
-        "Dwadashi",
-        "Trayodashi",
-        "Chaturdashi",
-        "Purnima"
-    ]
-
-    if index == 30:
-        name = "Amavasya"
-    elif index == 14:
-        name = "Purnima"
-    elif index < 15:
-        name = names[index]
+    if number <= 15:
+        name = TITHI_NAMES[number - 1]
+        paksha = "Shukla"
     else:
-        name = names[index - 15]
+        if number == 30:
+            name = "Amavasya"
+        else:
+            name = TITHI_NAMES[number - 16]
 
-    paksha = (
-        "Shukla Paksha"
-        if index < 15
-        else "Krishna Paksha"
+        paksha = "Krishna"
+
+    return {
+        "number": number,
+        "name": name,
+        "paksha": paksha,
+        "elongation": elongation
+    }
+
+
+def nakshatra_data(moon):
+    size = 360.0 / 27.0
+
+    index = min(
+        26,
+        int(moon / size)
     )
 
-    return name, paksha, index
+    inside = moon - index * size
 
-
-def get_nakshatra(moon):
-
-    nakshatra_size = 360.0 / 27.0
-
-    index = int(
-        moon / nakshatra_size
+    pada = min(
+        4,
+        int(inside / (size / 4.0)) + 1
     )
 
-    remainder = (
-        moon -
-        index * nakshatra_size
+    return {
+        "number": index + 1,
+        "name": NAKSHATRAS[index],
+        "pada": pada
+    }
+
+
+def yoga_data(sun, moon):
+    value = norm(sun + moon)
+
+    size = 360.0 / 27.0
+
+    index = min(
+        26,
+        int(value / size)
     )
 
-    pada = int(
-        remainder /
-        (nakshatra_size / 4.0)
+    return {
+        "number": index + 1,
+        "name": YOGA_NAMES[index]
+    }
+
+
+def karana_data(sun, moon):
+    elongation = norm(moon - sun)
+
+    half = int(
+        elongation / 6.0
     ) + 1
 
-    if pada > 4:
-        pada = 4
+    if half == 1:
+        name = "Kimstughna"
+    elif half == 58:
+        name = "Shakuni"
+    elif half == 59:
+        name = "Chatushpada"
+    elif half == 60:
+        name = "Naga"
+    else:
+        name = KARANA_MOVING[
+            (half - 2) % 7
+        ]
 
-    return (
-        NAKSHATRAS[index],
-        pada,
-        index
-    )
-
-
-def get_yoga(sun, moon):
-
-    value = norm(
-        sun + moon
-    )
-
-    yoga_size = 360.0 / 27.0
-
-    index = int(
-        value / yoga_size
-    )
-
-    return YOGAS[index], index
+    return {
+        "number": half,
+        "name": name
+    }
 
 
-def get_karana(sun, moon):
-
-    difference = norm(
-        moon - sun
-    )
-
-    half_tithi = int(
-        difference / 6.0
-    )
-
-    if half_tithi == 0:
-        return "Kimstughna"
-
-    if half_tithi >= 57:
-
-        if half_tithi == 57:
-            return "Shakuni"
-
-        if half_tithi == 58:
-            return "Chatushpada"
-
-        return "Naga"
-
-    return KARANAS[
-        (half_tithi - 1) % 7
-    ]
-
-
-# ---------------------------------------------------------
-# JULIAN DATE → DATETIME
-# ---------------------------------------------------------
+# ============================================================
+# SUNRISE / SUNSET / MOONRISE / MOONSET
+# ============================================================
 
 def jd_to_datetime(jd):
-
-    result = swe.jdut1_to_utc(
+    y, m, d, hour = swe.jdut1_to_utc(
         jd,
         swe.GREG_CAL
     )
 
-    year = int(result[0])
-    month = int(result[1])
-    day = int(result[2])
+    h = int(hour)
 
-    hour_decimal = float(result[3])
-
-    hour = int(
-        hour_decimal
-    )
-
-    minute_decimal = (
-        hour_decimal - hour
+    minute_float = (
+        hour - h
     ) * 60.0
 
     minute = int(
-        minute_decimal
+        minute_float
     )
 
     second = int(
         round(
-            (minute_decimal - minute) * 60.0
+            (minute_float - minute) * 60
         )
     )
 
@@ -267,228 +254,107 @@ def jd_to_datetime(jd):
 
     if minute >= 60:
         minute = 0
-        hour += 1
+        h += 1
 
     return datetime(
-        year,
-        month,
-        day,
-        hour,
+        int(y),
+        int(m),
+        int(d),
+        h,
         minute,
         second,
         tzinfo=timezone.utc
     )
 
 
-# ---------------------------------------------------------
-# SUNRISE / SUNSET
-# ---------------------------------------------------------
-
-def sunrise_sunset(
+def rise_set(
     date,
     latitude,
-    longitude
+    longitude,
+    body,
+    event
 ):
-
-    midnight = datetime(
+    start = datetime(
         date.year,
         date.month,
         date.day,
         tzinfo=timezone.utc
     )
 
-    jd = jd_from_datetime(
-        midnight
-    )
+    jd = jd_from_datetime(start)
 
-    location = (
-        float(longitude),
-        float(latitude),
-        0.0
-    )
-
-    rise = swe.rise_trans(
-        jd,
-        swe.SUN,
-        swe.CALC_RISE,
-        location
-    )
-
-    setting = swe.rise_trans(
-        jd,
-        swe.SUN,
-        swe.CALC_SET,
-        location
-    )
-
-    sunrise_jd = rise[1][0]
-    sunset_jd = setting[1][0]
-
-    return (
-        jd_to_datetime(
-            sunrise_jd
-        ),
-        jd_to_datetime(
-            sunset_jd
-        )
-    )
-
-
-# ---------------------------------------------------------
-# MOONRISE / MOONSET
-# ---------------------------------------------------------
-
-def moonrise_moonset(
-    date,
-    latitude,
-    longitude
-):
-
-    midnight = datetime(
-        date.year,
-        date.month,
-        date.day,
-        tzinfo=timezone.utc
-    )
-
-    jd = jd_from_datetime(
-        midnight
-    )
-
-    location = (
+    geopos = (
         float(longitude),
         float(latitude),
         0.0
     )
 
     try:
-
-        rise = swe.rise_trans(
+        result = swe.rise_trans(
             jd,
-            swe.MOON,
-            swe.CALC_RISE,
-            location
+            body,
+            event,
+            geopos
         )
 
-        moonrise = jd_to_datetime(
-            rise[1][0]
+        return jd_to_datetime(
+            result[1][0]
         )
 
     except Exception:
-
-        moonrise = None
-
-    try:
-
-        setting = swe.rise_trans(
-            jd,
-            swe.MOON,
-            swe.CALC_SET,
-            location
-        )
-
-        moonset = jd_to_datetime(
-            setting[1][0]
-        )
-
-    except Exception:
-
-        moonset = None
-
-    return moonrise, moonset
-
-
-# ---------------------------------------------------------
-# FORMATTING
-# ---------------------------------------------------------
-
-def format_local(
-    dt,
-    timezone_name
-):
-
-    if dt is None:
         return None
 
-    tz = ZoneInfo(
-        timezone_name
-    )
 
-    local = dt.astimezone(
-        tz
-    )
+# ============================================================
+# TRANSITIONS
+# ============================================================
 
-    return local.strftime(
-        "%I:%M %p"
-    ).lstrip("0")
-
-
-def format_duration(delta):
-
-    if delta is None:
-        return None
-
-    total_seconds = int(
-        delta.total_seconds()
-    )
-
-    hours = total_seconds // 3600
-
-    minutes = (
-        total_seconds % 3600
-    ) // 60
-
-    return (
-        f"{hours}h {minutes}m"
+def current_value(dt, function):
+    return function(
+        jd_from_datetime(dt)
     )
 
 
-# ---------------------------------------------------------
-# BOUNDARY SEARCH
-# ---------------------------------------------------------
-
-def find_boundary(
+def find_transition(
     start,
     end,
-    value_function,
-    initial_value
+    function,
+    initial
 ):
-
     step = timedelta(
-        minutes=10
+        minutes=5
     )
 
     current = start
-
-    previous = initial_value
+    previous = initial
 
     while current < end:
 
-        next_time = min(
+        nxt = min(
             current + step,
             end
         )
 
-        value = value_function(
-            next_time
+        value = current_value(
+            nxt,
+            function
         )
 
         if value != previous:
 
             low = current
-            high = next_time
+            high = nxt
 
-            for _ in range(25):
+            for _ in range(30):
 
                 middle = (
                     low +
                     (high - low) / 2
                 )
 
-                middle_value = (
-                    value_function(
-                        middle
-                    )
+                middle_value = current_value(
+                    middle,
+                    function
                 )
 
                 if middle_value == previous:
@@ -498,166 +364,361 @@ def find_boundary(
 
             return high
 
-        current = next_time
+        current = nxt
         previous = value
 
     return None
 
 
-# ---------------------------------------------------------
-# AYANA / RITU
-# ---------------------------------------------------------
+# ============================================================
+# FORMAT
+# ============================================================
 
-def get_ayana(sun_rashi_index):
+def local_time(dt, timezone_name):
 
-    if (
-        sun_rashi_index >= 9 or
-        sun_rashi_index <= 2
-    ):
-        return "Uttarayana"
+    if not dt:
+        return None
 
-    return "Dakshinayana"
+    return dt.astimezone(
+        ZoneInfo(timezone_name)
+    ).strftime(
+        "%I:%M %p"
+    ).lstrip("0")
 
 
-def get_ritu(
-    month
+def duration_text(delta):
+
+    if not delta:
+        return None
+
+    seconds = int(
+        delta.total_seconds()
+    )
+
+    hours = seconds // 3600
+
+    minutes = (
+        seconds % 3600
+    ) // 60
+
+    return f"{hours}h {minutes}m"
+
+
+def range_text(
+    start,
+    end,
+    timezone_name
 ):
+    if not start or not end:
+        return None
 
-    # Approximate traditional solar-season mapping.
-    # The core Panchang calculations remain astronomical.
-
-    if month in [12, 1]:
-        return "Shishir"
-
-    if month in [2, 3]:
-        return "Vasant"
-
-    if month in [4, 5]:
-        return "Grishma"
-
-    if month in [6, 7]:
-        return "Varsha"
-
-    if month in [8, 9]:
-        return "Sharad"
-
-    return "Hemant"
+    return (
+        local_time(
+            start,
+            timezone_name
+        )
+        + " – " +
+        local_time(
+            end,
+            timezone_name
+        )
+    )
 
 
-# ---------------------------------------------------------
-# RAHU / YAMAGANDA / GULIKA
-# ---------------------------------------------------------
+# ============================================================
+# MUHURTA
+# ============================================================
 
-RAHU_SEGMENTS = [
-    8, 2, 7, 5, 6, 4, 3
-]
-
-YAMAGANDA_SEGMENTS = [
-    5, 4, 3, 2, 1, 7, 6
-]
-
-GULIKA_SEGMENTS = [
-    7, 6, 5, 4, 3, 2, 1
-]
-
-
-def daytime_segment(
+def segment(
     sunrise,
     sunset,
-    segment
+    index
 ):
-
     duration = (
         sunset - sunrise
     )
 
-    segment_length = (
-        duration / 8
+    length = duration / 8
+
+    return (
+        sunrise + length * index,
+        sunrise + length * (index + 1)
     )
 
-    start = (
-        sunrise +
-        segment_length * segment
-    )
 
-    end = (
-        start +
-        segment_length
-    )
-
-    return start, end
-
-
-def get_kaal(
+def kaal_data(
     sunrise,
     sunset,
     weekday
 ):
 
-    rahu_index = (
+    rahu = segment(
+        sunrise,
+        sunset,
         RAHU_SEGMENTS[weekday] - 1
     )
 
-    yamaganda_index = (
+    yamaganda = segment(
+        sunrise,
+        sunset,
         YAMAGANDA_SEGMENTS[weekday] - 1
     )
 
-    gulika_index = (
+    gulika = segment(
+        sunrise,
+        sunset,
         GULIKA_SEGMENTS[weekday] - 1
     )
 
-    rahu = daytime_segment(
-        sunrise,
-        sunset,
-        rahu_index
-    )
-
-    yamaganda = daytime_segment(
-        sunrise,
-        sunset,
-        yamaganda_index
-    )
-
-    gulika = daytime_segment(
-        sunrise,
-        sunset,
-        gulika_index
-    )
-
-    return rahu, yamaganda, gulika
-
-
-# ---------------------------------------------------------
-# ABHIJIT
-# ---------------------------------------------------------
-
-def get_abhijit(
-    sunrise,
-    sunset
-):
-
-    day_duration = (
+    day_length = (
         sunset - sunrise
     )
 
-    midpoint = (
+    abhijit_mid = (
         sunrise +
-        day_duration / 2
+        day_length / 2
     )
 
-    window = (
-        day_duration / 15
+    abhijit_length = (
+        day_length / 15
     )
 
-    return (
-        midpoint - window / 2,
-        midpoint + window / 2
+    abhijit = (
+        abhijit_mid -
+        abhijit_length / 2,
+        abhijit_mid +
+        abhijit_length / 2
     )
 
+    return {
+        "rahuKaal": rahu,
+        "yamaganda": yamaganda,
+        "gulika": gulika,
+        "abhijit": abhijit
+    }
 
-# ---------------------------------------------------------
-# MAIN CALCULATION
-# ---------------------------------------------------------
+
+def brahma_muhurat(
+    sunrise
+):
+    end = sunrise
+
+    start = sunrise - timedelta(
+        minutes=96
+    )
+
+    return start, end
+
+
+# ============================================================
+# CHOGHADIYA
+# ============================================================
+
+def choghadiya(
+    sunrise,
+    sunset,
+    next_sunrise,
+    weekday
+):
+
+    result_day = []
+
+    result_night = []
+
+    day_duration = (
+        sunset - sunrise
+    ) / 8
+
+    for i in range(8):
+
+        start = (
+            sunrise +
+            day_duration * i
+        )
+
+        end = (
+            sunrise +
+            day_duration * (i + 1)
+        )
+
+        result_day.append({
+            "name":
+                CHOGHADIYA_DAY[weekday][i],
+            "start":
+                start.isoformat(),
+            "end":
+                end.isoformat()
+        })
+
+    night_duration = (
+        next_sunrise - sunset
+    ) / 8
+
+    for i in range(8):
+
+        start = (
+            sunset +
+            night_duration * i
+        )
+
+        end = (
+            sunset +
+            night_duration * (i + 1)
+        )
+
+        result_night.append({
+            "name":
+                CHOGHADIYA_NIGHT[weekday][i],
+            "start":
+                start.isoformat(),
+            "end":
+                end.isoformat()
+        })
+
+    return {
+        "day": result_day,
+        "night": result_night
+    }
+
+
+# ============================================================
+# SAMVATSARA / RITU / AYANA
+# ============================================================
+
+def solar_rashi(longitude):
+
+    index = int(
+        longitude / 30
+    )
+
+    return {
+        "number": index + 1,
+        "name": SIGNS[index]
+    }
+
+
+def ayana_from_sun(sun):
+
+    # Sidereal solar longitude.
+    # Makara to Mithuna = Uttarayana.
+    if sun >= 270 or sun < 90:
+        return "Uttarayana"
+
+    return "Dakshinayana"
+
+
+def ritu_from_sun(sun):
+
+    # Six traditional solar seasons.
+    index = int(
+        (sun % 360) / 60
+    )
+
+    names = [
+        "Vasanta",
+        "Grishma",
+        "Varsha",
+        "Sharad",
+        "Hemanta",
+        "Shishira"
+    ]
+
+    return names[index]
+
+
+# ============================================================
+# FESTIVAL / VRAT CORE
+# ============================================================
+
+def festival_candidates(
+    date,
+    tithi,
+    sun,
+    moon
+):
+
+    festivals = []
+
+    tithi_number = tithi["number"]
+
+    paksha = tithi["paksha"]
+
+    solar_rashi = int(
+        sun / 30
+    )
+
+    # Ekadashi
+    if tithi_number in (11, 26):
+        festivals.append({
+            "name": "Ekadashi",
+            "type": "Vrat",
+            "tithi": tithi["name"],
+            "paksha": paksha,
+            "date": date.isoformat()
+        })
+
+    # Purnima
+    if tithi_number == 15:
+        festivals.append({
+            "name": "Purnima",
+            "type": "Tithi",
+            "tithi": "Purnima",
+            "paksha": "Shukla",
+            "date": date.isoformat()
+        })
+
+    # Amavasya
+    if tithi_number == 30:
+        festivals.append({
+            "name": "Amavasya",
+            "type": "Tithi",
+            "tithi": "Amavasya",
+            "paksha": "Krishna",
+            "date": date.isoformat()
+        })
+
+    # Pradosh
+    if tithi_number in (13, 28):
+        festivals.append({
+            "name": "Pradosh Vrat",
+            "type": "Vrat",
+            "tithi": tithi["name"],
+            "paksha": paksha,
+            "date": date.isoformat()
+        })
+
+    # Sankashti Chaturthi
+    if (
+        tithi_number == 19
+        and paksha == "Krishna"
+    ):
+        festivals.append({
+            "name": "Sankashti Chaturthi",
+            "type": "Vrat",
+            "tithi": tithi["name"],
+            "paksha": paksha,
+            "date": date.isoformat()
+        })
+
+    # Monthly Shivaratri
+    if (
+        tithi_number == 29
+        and paksha == "Krishna"
+    ):
+        festivals.append({
+            "name": "Masik Shivaratri",
+            "type": "Vrat",
+            "tithi": tithi["name"],
+            "paksha": paksha,
+            "date": date.isoformat()
+        })
+
+    return festivals
+
+
+# ============================================================
+# MAIN ENGINE
+# ============================================================
 
 def calculate_panchang(
     date,
@@ -670,192 +731,215 @@ def calculate_panchang(
         timezone_name
     )
 
-    local_midnight = datetime(
+    local_start = datetime(
         date.year,
         date.month,
         date.day,
         tzinfo=tz
     )
 
-    next_midnight = (
-        local_midnight +
+    local_next = (
+        local_start +
         timedelta(days=1)
     )
 
-    day_start_utc = (
-        local_midnight
-        .astimezone(timezone.utc)
+    sunrise = rise_set(
+        date,
+        latitude,
+        longitude,
+        swe.SUN,
+        swe.CALC_RISE
     )
 
-    day_end_utc = (
-        next_midnight
-        .astimezone(timezone.utc)
+    sunset = rise_set(
+        date,
+        latitude,
+        longitude,
+        swe.SUN,
+        swe.CALC_SET
     )
 
-    sunrise, sunset = (
-        sunrise_sunset(
-            date,
-            latitude,
-            longitude
+    moonrise = rise_set(
+        date,
+        latitude,
+        longitude,
+        swe.MOON,
+        swe.CALC_RISE
+    )
+
+    moonset = rise_set(
+        date,
+        latitude,
+        longitude,
+        swe.MOON,
+        swe.CALC_SET
+    )
+
+    if not sunrise or not sunset:
+        raise RuntimeError(
+            "Unable to calculate sunrise/sunset"
         )
+
+    next_date = (
+        date +
+        timedelta(days=1)
     )
 
-    moonrise, moonset = (
-        moonrise_moonset(
-            date,
-            latitude,
-            longitude
-        )
+    next_sunrise = rise_set(
+        next_date,
+        latitude,
+        longitude,
+        swe.SUN,
+        swe.CALC_RISE
     )
 
-    sun, moon = get_sun_moon(
-        jd_from_datetime(
-            sunrise
-        )
+    sunrise_jd = jd_from_datetime(
+        sunrise
     )
 
-    tithi, paksha, _ = (
-        get_tithi(
-            sun,
-            moon
-        )
+    sun, moon = sun_moon(
+        sunrise_jd
     )
 
-    nakshatra, pada, _ = (
-        get_nakshatra(
-            moon
-        )
-    )
-
-    yoga, _ = get_yoga(
+    tithi = tithi_data(
         sun,
         moon
     )
 
-    karana = get_karana(
+    nakshatra = nakshatra_data(
+        moon
+    )
+
+    yoga = yoga_data(
         sun,
         moon
     )
 
-    sun_rashi_index = int(
-        sun / 30
+    karana = karana_data(
+        sun,
+        moon
     )
 
-    moon_rashi_index = int(
-        moon / 30
+    weekday = (
+        date.weekday() + 1
+    ) % 7
+
+    # ------------------------------
+    # TRANSITIONS
+    # ------------------------------
+
+    day_end = (
+        local_next
+        .astimezone(timezone.utc)
     )
 
-    sun_rashi = SIGNS[
-        sun_rashi_index
-    ]
-
-    moon_rashi = SIGNS[
-        moon_rashi_index
-    ]
-
-    weekday = date.weekday()
-
-    vara = VARAS[
-        (weekday + 1) % 7
-    ]
-
-    # ---------------------------------------------
-    # TITHI END
-    # ---------------------------------------------
-
-    tithi_end = find_boundary(
+    tithi_end = find_transition(
         sunrise,
-        day_end_utc,
-        lambda dt:
-            get_tithi(
-                *get_sun_moon(
-                    jd_from_datetime(dt)
-                )
-            )[0],
-        tithi
+        day_end,
+        lambda jd:
+            tithi_data(
+                *sun_moon(jd)
+            )["number"],
+        tithi["number"]
     )
 
-    # ---------------------------------------------
-    # NAKSHATRA END
-    # ---------------------------------------------
-
-    nakshatra_end = find_boundary(
+    nakshatra_end = find_transition(
         sunrise,
-        day_end_utc,
-        lambda dt:
-            get_nakshatra(
-                get_sun_moon(
-                    jd_from_datetime(dt)
-                )[1]
-            )[0],
-        nakshatra
+        day_end,
+        lambda jd:
+            nakshatra_data(
+                sun_moon(jd)[1]
+            )["number"],
+        nakshatra["number"]
     )
 
-    # ---------------------------------------------
-    # YOGA END
-    # ---------------------------------------------
-
-    yoga_end = find_boundary(
+    yoga_end = find_transition(
         sunrise,
-        day_end_utc,
-        lambda dt:
-            get_yoga(
-                *get_sun_moon(
-                    jd_from_datetime(dt)
-                )
-            )[0],
-        yoga
+        day_end,
+        lambda jd:
+            yoga_data(
+                *sun_moon(jd)
+            )["number"],
+        yoga["number"]
     )
 
-    # ---------------------------------------------
-    # DAY / NIGHT
-    # ---------------------------------------------
+    # ------------------------------
+    # MUHURTA
+    # ------------------------------
+
+    kaal = kaal_data(
+        sunrise,
+        sunset,
+        weekday
+    )
+
+    brahma = brahma_muhurat(
+        sunrise
+    )
+
+    # ------------------------------
+    # CHOGHADIYA
+    # ------------------------------
+
+    chog = choghadiya(
+        sunrise,
+        sunset,
+        next_sunrise or (
+            sunset +
+            timedelta(hours=12)
+        ),
+        weekday
+    )
+
+    # ------------------------------
+    # FESTIVALS
+    # ------------------------------
+
+    festivals = festival_candidates(
+        date,
+        tithi,
+        sun,
+        moon
+    )
+
+    # ------------------------------
+    # RASHI
+    # ------------------------------
+
+    moon_rashi = solar_rashi(
+        moon
+    )
+
+    sun_rashi = solar_rashi(
+        sun
+    )
+
+    # ------------------------------
+    # DURATIONS
+    # ------------------------------
 
     day_duration = (
         sunset - sunrise
     )
 
-    night_duration = (
-        timedelta(days=1) -
-        day_duration
-    )
-
-    # ---------------------------------------------
-    # KAAL
-    # ---------------------------------------------
-
-    rahu, yamaganda, gulika = (
-        get_kaal(
-            sunrise,
-            sunset,
-            weekday
+    if next_sunrise:
+        night_duration = (
+            next_sunrise - sunset
         )
-    )
+    else:
+        night_duration = None
 
-    abhijit = get_abhijit(
-        sunrise,
-        sunset
-    )
-
-    # ---------------------------------------------
-    # SAMVAT
-    # ---------------------------------------------
-
-    vikram_samvat = (
-        date.year + 57
-    )
-
-    shaka_samvat = (
-        date.year - 78
-    )
-
-    # ---------------------------------------------
+    # ------------------------------
     # RESULT
-    # ---------------------------------------------
+    # ------------------------------
 
     return {
 
         "success": True,
+
+        "engine": "Mauksh Panchang Engine",
+
+        "engineVersion": "2.0",
 
         "date":
             date.isoformat(),
@@ -871,160 +955,149 @@ def calculate_panchang(
         },
 
         "sunrise":
-            format_local(
+            local_time(
                 sunrise,
                 timezone_name
             ),
 
         "sunset":
-            format_local(
+            local_time(
                 sunset,
                 timezone_name
             ),
 
         "moonrise":
-            format_local(
+            local_time(
                 moonrise,
                 timezone_name
             ),
 
         "moonset":
-            format_local(
+            local_time(
                 moonset,
                 timezone_name
             ),
 
-        "tithi": {
+        "vara": {
             "name":
-                tithi,
+                WEEKDAYS[weekday]
+        },
+
+        "tithi": {
+            "number":
+                tithi["number"],
+            "name":
+                tithi["name"],
+            "paksha":
+                tithi["paksha"],
             "end":
-                format_local(
+                local_time(
                     tithi_end,
                     timezone_name
                 )
         },
 
-        "vara": {
-            "name":
-                vara
-        },
-
         "nakshatra": {
+            "number":
+                nakshatra["number"],
             "name":
-                nakshatra,
+                nakshatra["name"],
             "pada":
-                pada,
+                nakshatra["pada"],
             "end":
-                format_local(
+                local_time(
                     nakshatra_end,
                     timezone_name
                 )
         },
 
         "yoga": {
+            "number":
+                yoga["number"],
             "name":
-                yoga,
+                yoga["name"],
             "end":
-                format_local(
+                local_time(
                     yoga_end,
                     timezone_name
                 )
         },
 
         "karana": {
+            "number":
+                karana["number"],
             "name":
-                karana
+                karana["name"]
         },
 
         "moonRashi":
-            moon_rashi,
+            moon_rashi["name"],
 
         "sunRashi":
-            sun_rashi,
+            sun_rashi["name"],
 
         "moonNakshatra":
-            nakshatra,
+            nakshatra["name"],
 
         "paksha":
-            paksha,
+            tithi["paksha"],
 
         "ayana":
-            get_ayana(
-                sun_rashi_index
+            ayana_from_sun(
+                sun
             ),
 
         "ritu":
-            get_ritu(
-                date.month
+            ritu_from_sun(
+                sun
             ),
 
         "dayDuration":
-            format_duration(
+            duration_text(
                 day_duration
             ),
 
         "nightDuration":
-            format_duration(
+            duration_text(
                 night_duration
             ),
-
-        "vikramSamvat":
-            vikram_samvat,
-
-        "shakaSamvat":
-            shaka_samvat,
-
-        "sunDay":
-            vara,
 
         "timings": {
 
             "rahuKaal":
-                format_local(
-                    rahu[0],
-                    timezone_name
-                )
-                + " – " +
-                format_local(
-                    rahu[1],
+                range_text(
+                    kaal["rahuKaal"][0],
+                    kaal["rahuKaal"][1],
                     timezone_name
                 ),
 
             "yamaganda":
-                format_local(
-                    yamaganda[0],
-                    timezone_name
-                )
-                + " – " +
-                format_local(
-                    yamaganda[1],
+                range_text(
+                    kaal["yamaganda"][0],
+                    kaal["yamaganda"][1],
                     timezone_name
                 ),
 
             "gulika":
-                format_local(
-                    gulika[0],
-                    timezone_name
-                )
-                + " – " +
-                format_local(
-                    gulika[1],
+                range_text(
+                    kaal["gulika"][0],
+                    kaal["gulika"][1],
                     timezone_name
                 ),
 
             "abhijit":
-                format_local(
-                    abhijit[0],
-                    timezone_name
-                )
-                + " – " +
-                format_local(
-                    abhijit[1],
+                range_text(
+                    kaal["abhijit"][0],
+                    kaal["abhijit"][1],
                     timezone_name
                 ),
 
             "brahma":
-                None,
+                range_text(
+                    brahma[0],
+                    brahma[1],
+                    timezone_name
+                ),
 
             "durMuhurat":
                 None,
@@ -1036,20 +1109,32 @@ def calculate_panchang(
                 None
         },
 
-        "choghadiya": {
+        "choghadiya":
+            chog,
 
-            "day": [],
+        "festivals":
+            festivals,
 
-            "night": []
+        "samvat": {
+
+            "vikramSamvat":
+                date.year + 57,
+
+            "shakaSamvat":
+                date.year - 78
         },
 
-        "festivals": []
+        "vikramSamvat":
+            date.year + 57,
+
+        "shakaSamvat":
+            date.year - 78
     }
 
 
-# ---------------------------------------------------------
-# API
-# ---------------------------------------------------------
+# ============================================================
+# API ROUTE
+# ============================================================
 
 @panchang_api.route(
     "/api/panchang",
@@ -1079,7 +1164,6 @@ def panchang():
         )
 
         if not date_string:
-
             return jsonify({
                 "success": False,
                 "error":
@@ -1087,7 +1171,6 @@ def panchang():
             }), 400
 
         if latitude is None:
-
             return jsonify({
                 "success": False,
                 "error":
@@ -1095,31 +1178,48 @@ def panchang():
             }), 400
 
         if longitude is None:
-
             return jsonify({
                 "success": False,
                 "error":
                     "longitude is required"
             }), 400
 
-        try:
+        if not -90 <= latitude <= 90:
+            return jsonify({
+                "success": False,
+                "error":
+                    "Invalid latitude"
+            }), 400
 
+        if not -180 <= longitude <= 180:
+            return jsonify({
+                "success": False,
+                "error":
+                    "Invalid longitude"
+            }), 400
+
+        try:
             ZoneInfo(
                 timezone_name
             )
-
         except Exception:
-
             return jsonify({
                 "success": False,
                 "error":
                     "Invalid timezone"
             }), 400
 
-        date = datetime.strptime(
-            date_string,
-            "%Y-%m-%d"
-        ).date()
+        try:
+            date = datetime.strptime(
+                date_string,
+                "%Y-%m-%d"
+            ).date()
+        except ValueError:
+            return jsonify({
+                "success": False,
+                "error":
+                    "Invalid date. Use YYYY-MM-DD"
+            }), 400
 
         result = calculate_panchang(
             date,
@@ -1132,13 +1232,10 @@ def panchang():
             result
         )
 
-    except Exception as error:
+    except Exception as exc:
 
         return jsonify({
-
             "success": False,
-
             "error":
-                str(error)
-
+                str(exc)
         }), 500
