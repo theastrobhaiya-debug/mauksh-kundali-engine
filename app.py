@@ -1,11 +1,13 @@
 from flask import Flask
 from api.panchang import panchang_api
-from api.transits import transits_api
+from api.muhurat import muhurat_api
+
+app.register_blueprint(muhurat_api)
+
 
 app = Flask(__name__)
 
 app.register_blueprint(panchang_api)
-app.register_blueprint(transits_api)
 
 @app.route("/")
 def home():
