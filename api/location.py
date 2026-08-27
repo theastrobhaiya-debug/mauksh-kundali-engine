@@ -1,7 +1,8 @@
 from flask import Blueprint, request, jsonify
 from timezonefinder import TimezoneFinder
-from zoneinfo import ZoneInfo
-from datetime import datetime
+
+from api.geocoder import search_location
+
 
 location_api = Blueprint(
     "location_api",
@@ -29,21 +30,80 @@ def location():
             "error": "City is required"
         }), 400
 
-    # This endpoint is intentionally kept
-    # separate from the Kundali calculation engine.
-    #
-    # We will connect a geocoding provider here
-    # in the next step so that:
-    #
-    # Rishikesh -> latitude
-    # Rishikesh -> longitude
-    # Rishikesh -> timezone
-    #
-    # The calculation engine will then use
-    # those coordinates.
+    try:
 
-    return jsonify({
-        "success": False,
-        "city": city,
-        "message": "Location provider not connected yet"
-    }), 501
+        results = search_location(city)
+
+        if not results:
+
+            return jsonify({
+                "success": False,
+                "error": "Location not found"
+            }), 404
+
+        locations = []
+
+        for item in results:
+
+            latitude = item[
+                "latitude"
+            ]
+
+            longitude = item[
+                "longitude"
+            ]
+
+            timezone_name = tf.timezone_at(
+                lat=latitude,
+                lng=longitude
+            )
+
+            locations.append({
+
+                "display_name":
+                    item["display_name"],
+
+                "city":
+                    item["city"],
+
+                "state":
+                    item["state"],
+
+                "country":
+                    item["country"],
+
+                "country_code":
+                    item["country_code"],
+
+                "latitude":
+                    latitude,
+
+                "longitude":
+                    longitude,
+
+                "timezone":
+                    timezone_name
+
+            })
+
+        return jsonify({
+
+            "success": True,
+
+            "query": city,
+
+            "locations":
+                locations
+
+        })
+
+    except Exception as error:
+
+        return jsonify({
+
+            "success": False,
+
+            "error":
+                str(error)
+
+        }), 500
