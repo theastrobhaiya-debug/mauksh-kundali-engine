@@ -4,10 +4,12 @@ from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# Swiss Ephemeris
 swe.set_ephe_path(".")
 
-ZODIAC_SIGNS = [
+# Lahiri ayanamsha
+swe.set_sid_mode(swe.SIDM_LAHIRI)
+
+SIGNS = [
     "Aries", "Taurus", "Gemini", "Cancer",
     "Leo", "Virgo", "Libra", "Scorpio",
     "Sagittarius", "Capricorn", "Aquarius", "Pisces"
@@ -25,53 +27,120 @@ PLANETS = {
 }
 
 
-def sign_from_longitude(longitude):
-    longitude = longitude % 360
-    sign_index = int(longitude // 30)
+def normalize_degree(value):
+    return value % 360
+
+
+def get_sign(longitude):
+
+    longitude = normalize_degree(longitude)
+
+    sign_number = int(longitude // 30)
     degree = longitude % 30
 
     return {
-        "sign": ZODIAC_SIGNS[sign_index],
-        "sign_number": sign_index + 1,
+        "name": SIGNS[sign_number],
+        "number": sign_number + 1,
         "degree": round(degree, 6),
         "longitude": round(longitude, 6)
     }
 
 
+def get_house(longitude, ascendant):
+
+    longitude = normalize_degree(longitude)
+    ascendant = normalize_degree(ascendant)
+
+    distance = (longitude - ascendant) % 360
+
+    return int(distance // 30) + 1
+
+
 def calculate_planets(julian_day):
+
     planets = {}
 
     for name, planet_id in PLANETS.items():
+
         position, flags = swe.calc_ut(
             julian_day,
             planet_id,
-            swe.FLG_SWIEPH | swe.FLG_SPEED
+            swe.FLG_SWIEPH |
+            swe.FLG_SPEED |
+            swe.FLG_SIDEREAL
         )
 
-        longitude = position[0]
+        longitude = normalize_degree(position[0])
         speed = position[3]
 
         planets[name] = {
             "longitude": round(longitude, 6),
-            "sign": sign_from_longitude(longitude),
+            "sign": get_sign(longitude),
             "retrograde": speed < 0
         }
 
-    # Ketu is always opposite Rahu
-    rahu_longitude = planets["Rahu"]["longitude"]
-    ketu_longitude = (rahu_longitude + 180) % 360
+    # Ketu is exactly opposite Rahu
+    rahu = planets["Rahu"]["longitude"]
+
+    ketu = normalize_degree(rahu + 180)
 
     planets["Ketu"] = {
-        "longitude": round(ketu_longitude, 6),
-        "sign": sign_from_longitude(ketu_longitude),
+        "longitude": round(ketu, 6),
+        "sign": get_sign(ketu),
         "retrograde": True
     }
 
     return planets
 
 
+def calculate_ascendant(julian_day, latitude, longitude):
+
+    cusps, ascmc = swe.houses_ex(
+        julian_day,
+        latitude,
+        longitude,
+        b'P'
+    )
+
+    tropical_ascendant = ascmc[0]
+
+    # Convert tropical Ascendant to sidereal
+    ayanamsha = swe.get_ayanamsa_ut(julian_day)
+
+    sidereal_ascendant = normalize_degree(
+        tropical_ascendant - ayanamsha
+    )
+
+    return {
+        "longitude": round(sidereal_ascendant, 6),
+        "sign": get_sign(sidereal_ascendant)
+    }
+
+
+def calculate_houses(ascendant):
+
+    houses = []
+
+    asc_longitude = ascendant["longitude"]
+
+    for house_number in range(1, 13):
+
+        cusp = normalize_degree(
+            asc_longitude + ((house_number - 1) * 30)
+        )
+
+        houses.append({
+            "house": house_number,
+            "longitude": round(cusp, 6),
+            "sign": get_sign(cusp)
+        })
+
+    return houses
+
+
 @app.route("/health", methods=["GET"])
 def health():
+
     return jsonify({
         "status": "ok",
         "engine": "Mauksh Kundali Engine"
@@ -91,17 +160,26 @@ def kundali():
         "timezone"
     ]
 
-    missing = [field for field in required if field not in data]
+    missing = [
+        field for field in required
+        if field not in data
+    ]
 
     if missing:
+
         return jsonify({
+            "success": False,
             "error": "Missing required fields",
             "fields": missing
         }), 400
 
     try:
+
         date = data["date"]
         time = data["time"]
+
+        latitude = float(data["latitude"])
+        longitude = float(data["longitude"])
         timezone_offset = float(data["timezone"])
 
         local_datetime = datetime.fromisoformat(
@@ -109,16 +187,17 @@ def kundali():
         )
 
         # Convert local time to UTC
-        utc_datetime = local_datetime.timestamp() - (
-            timezone_offset * 3600
+        utc_timestamp = (
+            local_datetime.timestamp()
+            - timezone_offset * 3600
         )
 
         utc_datetime = datetime.fromtimestamp(
-            utc_datetime,
+            utc_timestamp,
             tz=timezone.utc
         )
 
-        hour = (
+        utc_hour = (
             utc_datetime.hour
             + utc_datetime.minute / 60
             + utc_datetime.second / 3600
@@ -128,36 +207,81 @@ def kundali():
             utc_datetime.year,
             utc_datetime.month,
             utc_datetime.day,
-            hour
+            utc_hour
         )
 
-        planets = calculate_planets(julian_day)
+        # Ascendant
+        ascendant = calculate_ascendant(
+            julian_day,
+            latitude,
+            longitude
+        )
+
+        # Houses
+        houses = calculate_houses(
+            ascendant
+        )
+
+        # Planets
+        planets = calculate_planets(
+            julian_day
+        )
+
+        # Add house placement
+        for planet in planets:
+
+            planet_longitude = planets[
+                planet
+            ]["longitude"]
+
+            planets[planet]["house"] = get_house(
+                planet_longitude,
+                ascendant["longitude"]
+            )
 
         return jsonify({
+
             "success": True,
-            "engine": "Mauksh Kundali Engine",
-            "calculation": {
-                "julian_day": julian_day,
-                "ayanamsha": "Lahiri"
+
+            "engine": {
+                "name": "Mauksh Kundali Engine",
+                "version": "0.1.0"
             },
+
+            "calculation": {
+                "system": "Vedic / Sidereal",
+                "ayanamsha": "Lahiri",
+                "julian_day": julian_day
+            },
+
             "birth": {
                 "date": date,
                 "time": time,
-                "latitude": data["latitude"],
-                "longitude": data["longitude"],
+                "latitude": latitude,
+                "longitude": longitude,
                 "timezone": timezone_offset
             },
+
+            "ascendant": ascendant,
+
+            "houses": houses,
+
             "planets": planets
+
         })
 
     except Exception as error:
+
         return jsonify({
+
             "success": False,
             "error": str(error)
+
         }), 500
 
 
 if __name__ == "__main__":
+
     app.run(
         host="0.0.0.0",
         port=5000,
